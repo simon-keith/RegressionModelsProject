@@ -1,0 +1,213 @@
+---
+title: 'Data Science Coursera: Regression Models Project'
+author: "Simon Keith"
+date: "`r format(Sys.Date(), '%F')`"
+output: 
+  pdf_document: 
+    highlight: tango
+    toc: yes
+    toc_depth: 3
+linkcolor: red
+urlcolor: red
+citecolor: red
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(MASS, tidyr, plyr, dplyr, grid, ggplot2, ggfortify, gridExtra, RColorBrewer, pander)
+```
+
+# Overview
+### Note
+This work was done for the "Regression Models" course project, as part of the [Data Science specialization](https://www.coursera.org/specializations/jhu-data-science) on Coursera.  
+__Disclaimer:__ for better readability I chose to keep plots and explanatory text together instead of adding an appendix. However, keeping the code would make the report far too long. You can get the _.Rmd_ file on the [github repository](https://github.com/simonkth/RegressionModelsProject).  
+
+### Executive summary
+In this document, we explore the relationship between a set of variables and miles per gallon (mpg), using the [mtcars](https://stat.ethz.ch/R-manual/R-devel/library/datasets/html/mtcars.html) dataset. We are particularly interested in the two following questions:  
+
+* Which transmission (automatic or manual) is better for mpg?
+* What is the mpg difference between automatic and manual transmissions?  
+
+We use regression techniques in order to answer these questions.  
+We show that, at first glance, cars with manual __transmission__ seem to have a better fuel efficiency (more __mpg__). However, when we apply the right transformations and select the right features, this relation seems to become insignificant. Instead, we choose a model explaining reduction in fuel efficiency by geometrical relations with __weight__ and __gross horsepower__, both features having a negative impact on __mpg__.  
+Stepwise model selection by AIC was used to select the features, since many variables in the dataset are highly correlated.  
+\  
+
+# Exploratory data analysis
+The data was extracted from the 1974 Motor Trend US magazine, and comprises fuel consumption and 10 aspects of automobile design and performance for 32 automobiles (1973–74 models).  
+
+### Exploring fuel efficiency (mpg) versus transmission (am)
+Let's start by plotting __mpg__ against the type of __transmission__. We first transform variables that have no more than 3 levels to factors. Also, for better readability we rename the levels of __transmission__.  
+```{r explore_am, fig.height=4, fig.width=9, fig.align='center'}
+# load the data
+data(mtcars)
+
+# transform appropriate variables to factors
+factors_ind <- which(apply(mtcars, 2, function(x) length(unique(x))) <= 3)
+mtcars[,factors_ind] <- lapply(mtcars[,factors_ind], as.factor)
+mtcars$am <- revalue(mtcars$am, c("0" = "automatic", "1" = "manual"))
+
+# plot mpg against am
+g1 <- ggplot(mtcars, aes(mpg, color = am, fill = am)) + geom_density(alpha = .25) + 
+  scale_color_brewer(palette = "Set1") + scale_fill_brewer(palette = "Set1") + 
+  theme(legend.position = "none") + coord_flip() + scale_y_reverse()
+g2 <- ggplot(mtcars, aes(am, mpg, fill = am)) + geom_boxplot(alpha = .5) + 
+  scale_fill_brewer(palette = "Set1") + theme(axis.title.y = element_blank(), 
+                                              legend.position = "none")
+grid.arrange(g1, g2, widths = c(2, 1))
+```
+\  
+
+This graph shows the density of __mpg__ and a boxplot with __automatic transmissions__ in red and __manual transmissions__ in blue. We can already see that the medians are quite different for the two groups, and that the interquartile ranges don't overlap. From a visual point of view, it looks like automatic transmissions have a significantly lower fuel efficiency than manual transmissions. Let's see if we can confirm and quantify this with a regression model.  
+```{r ols_am}
+fit_am <- lm(mpg ~ am, data = mtcars)
+pander(summary(fit_am), caption = "mpg ~ am", add.significance.stars = TRUE)
+```
+\  
+
+As we can see, there is an average __`r formatC(fit_am$coefficients[2], format = "f", digits = 2)`__ increase in fuel efficiency (__miles per gallon__) for __manual transmissions__ as compared to __automatic transmissions__. A t-test confirms the significance of this difference in the mean efficiency of the two groups.  
+\  
+
+### Exploring fuel efficiency (mpg) versus all features
+Let's investigate the relation of __mpg__ with other features. Below we plot __mpg__ against all other features except __transmission__ which is color coded (same colors as before).  
+```{r explore_others, fig.height=9, fig.width=9, fig.align='center'}
+# function to make plots of other features against mpg and am
+make_mpg_plot <- function(feature) {
+      base <- ggplot(mtcars[c("mpg", "am", feature)], 
+                     aes_string(x = feature, y = "mpg", fill = "am")) +
+            scale_fill_brewer(palette = "Set1") +
+            theme(axis.text = element_text(size = rel(.8)), 
+                  axis.title = element_text(size = rel(.9)))
+      if (is.factor(mtcars[, feature])) {
+            cl <- brewer.pal(9, "Set1")[9]
+            base + geom_boxplot(color = cl, fill = cl, alpha = .25, linetype = "dashed") + 
+                  geom_jitter(width = .2, height = 0, pch = 21, size = rel(2), alpha = .5) +
+                  theme(legend.position = "none")
+      } else {
+            base + geom_point(pch = 21, size = rel(2), alpha = .5) +
+                  theme(legend.position = "none")
+      }
+}
+
+# create a list of gtables for features other than "am", 
+# prepare to arrange in 3 columns with y axis titles only on the left plots
+other_ft <- names(mtcars)[!names(mtcars) %in% c("mpg", "am")]
+n_cols <- 3; no_left <- other_ft[seq_along(other_ft) %% n_cols != 1]
+prep_mpg_plot <- function(f) {
+  ggplot_gtable(ggplot_build(
+    if (f %in% no_left) {
+      make_mpg_plot(f) + theme(axis.title.y = element_blank())
+    } else make_mpg_plot(f)
+  ))
+}
+
+# maxe plot heights and widths uniform and arrange in 3 columns
+mpg_plots <- lapply(other_ft, prep_mpg_plot)
+max_widths <- do.call("unit.pmax", lapply(mpg_plots, function(g) g$widths[2:3]))
+max_heights <- do.call("unit.pmax", lapply(mpg_plots, function(g) g$heights[7:8]))
+mpg_plots <- lapply(mpg_plots, function(g) {
+  g$widths[2:3] <- max_widths; g$heights[7:8] <- max_heights; g
+})
+do.call("grid.arrange", 
+        c(mpg_plots, ncol = n_cols, 
+          top = paste0("All vs mpg (automatic transmission in red, manual in blue)")))
+```
+\  
+
+We see some interesting things on these plots. First, we observe some obvious imbalance between the two types of __transmissions__. For example, cars with __automatic transmissions__ are much heavier (__wt__ feature) than their __manual__ counterpart. We observe similar cases for __gear__ , __disp__ and __drat__.  
+Then, we see a clear pattern between __mpg__ one one side and __disp__ and __hp__ on the other side, although the relations are not quite linear. It seems that a log transformation could make it more linear. Below, we take the logs of all numeric features (except __carb__) and then plot their density against a scaled axis.  
+```{r logtest, fig.height=5, fig.width=9}
+dd <- suppressWarnings(
+  select(mtcars[,sapply(mtcars, is.numeric)], -carb) %>% gather("feature", "raw") %>%
+    mutate(log = log(raw)) %>% group_by(feature) %>% mutate_all(funs(scale)) %>% 
+    ungroup() %>% gather("trans", "value", 2:3))
+cl <- brewer.pal(8, "Accent")[c(1,8)]
+ggplot(dd, aes(value, color = trans, fill = trans)) + scale_fill_manual(values = cl) + 
+  scale_color_manual(values = cl) + geom_density(bw = "SJ", alpha = .25) + 
+  facet_wrap(~ feature, scales = "free") + theme_minimal() + 
+  ggtitle("Scaled log transformations of numeric features")
+  
+```
+\  
+
+Based on the shape of their distribution, __mpg__ and __hp__ seem to be good candidates for log transformation. We plot the transformed features below, with the same color code as before.  
+```{r logtrans, fig.height=3, fig.width=9}
+grid.arrange(
+      ggplot(mtcars, aes(wt, log(mpg), fill = am)) + 
+            geom_point(pch = 21, size = rel(2), alpha = .5) + 
+            scale_fill_brewer(palette = "Set1") + theme(legend.position = "none"),
+      ggplot(mtcars, aes(log(hp), log(mpg), fill = am)) + 
+            geom_point(pch = 21, size = rel(2), alpha = .5) + 
+            scale_fill_brewer(palette = "Set1") + 
+            theme(axis.title.y = element_blank(), legend.position = "none"),
+      ncol = 2, top = "Log-transformed features"
+)
+```
+\  
+
+Finally, some variables, such as __disp__, __wt__ or __hp__, seem to have a very similar relation with __mpg__. The table below show that several features are indeed highly correlated. This will be an issue for model selection.  
+```{r corr}
+mcor <- cor(model.matrix(mpg ~ . - 1, data = mtcars))
+mcor[upper.tri(mcor, diag = TRUE)] <- NA
+mcor <- data.frame(var1 = row.names(mcor), mcor) %>% gather("var2", "corr", -var1)
+mcor <- mcor[complete.cases(mcor),] %>% arrange(desc(abs(corr)))
+pander(head(mcor, 6), digits = 3, 
+       keep.trailing.zeros = TRUE, justify = "right")
+```
+\  
+
+# Final model
+### Feature selection
+Based on the knowledge acquired from the exploratory data analysis, we transform __mpg__ and __hp__ to their log. Since the features are highly correlated, we also perform stepwise model selection by AIC on the resulting data.  
+```{r feature_selection}
+mtcars2 <- mutate(mtcars, log_mpg = log(mpg), log_hp = log(hp)) %>% select(-mpg, -hp)
+row.names(mtcars2) <- row.names(mtcars)
+fit_step <- stepAIC(lm(log_mpg ~ ., data = mtcars2), direction = "both", trace = 0)
+pander(summary(fit_step), caption = capture.output(formula(fit_step)), 
+       add.significance.stars = TRUE)
+```
+\  
+
+The weight in 1000 lbs, __wt__, and the log of __hp__ (gross horsepower) were selected. Both features have highly significant coefficients and we achieve a quite high __adjusted $R^2$__ of __`r formatC(summary(fit_step)$adj.r.squared, format = "f", digits = 4)`__.  
+However, we note that __transmission__ was not selected. Let's add it to the model just for reference:  
+```{r model_am}
+pander(summary(
+  lm(formula(paste(capture.output(formula(fit_step)), "+ am")), data = mtcars2)), 
+  caption = paste(capture.output(formula(fit_step)), "+ am"), 
+  add.significance.stars = TRUE)
+```
+\  
+
+After transforming __mpg__ and __hp__ to their log, and accounting for __wt__ and the log of __hp__ in the model, __transmission__ cease to have an impact on __mpg__. Indeed the estimate is not significantly different from zero and the __adjusted $R^2$__ dropped a little bit. Regarding the initial questions, we conclude that the type of __transmission__ is not necessarily relevant when one wants to estimate the fuel efficiency of a car.  
+\  
+
+### Interpretation
+Since we made some transformations to the data, let's interpret the coefficients of our selected model.  
+Holding all other variables:  
+
+*  __wt__: for a __1000 lbs increase__ in weight, we expect to see a __`r formatC(-fit_step$coefficients[2] * 100, format = "f", digits = 2)` % decrease__ in __mpg__
+* __hp__:  for a __1 % increase__ in __hp__, we expect to see a __`r formatC(-fit_step$coefficients[3] * 100, format = "f", digits = 2)` % decrease__ in __mpg__.
+\  
+
+### Residual diagnostics
+```{r res_diagn, fig.height=6, fig.width=9}
+autoplot(fit_step) + theme_bw()
+```
+\  
+
+From the residual diagnostics plots, we observe no particular pattern in the residuals versus fitted values. However, from the QQ-plot it seems that the residual is a little bit right skewed. The scale-location plot seem to show some heteroscedasticity, with wider spread residuals around the extremes of the fitted values. This might be due to the fact that we have less observations on the extremes, but also to the presence of some outliers, as we can see on the residual versus leverage plot.  
+  
+Let's finish by checking hatvalues to identify the cars that have high leverage:  
+```{r hatvalues, fig.height=3, fig.width=9}
+hatvals <- hatvalues(fit_step)
+mtcars$selected <- hatvals > .19
+ggplot(select(mtcars, selected, mpg, wt, hp) %>% 
+         gather("predictor", "value", 3:4), aes(value, mpg, fill = selected)) + 
+  geom_point(pch = 21, size = rel(2), alpha = .5) + theme(legend.position = "none") +
+  facet_grid(. ~ predictor, scales = "free") + scale_fill_brewer(palette = "Dark2")
+```
+\  
+In this plot we show in orange the 5 cars with the highest hatvalues. Indeed, most of them have low __mpg__ and high values for __wt__ and __hp__.  
+  
+Overall, we conclude that our model fits the data quite well. We may use this model for prediction as long as we pay attention to particularly low or high fitted values, as well as extreme values in the predictors.  
